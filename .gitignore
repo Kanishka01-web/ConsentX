@@ -1,3 +1,4 @@
+@"
 # Node modules
 /node_modules
 
@@ -50,3 +51,7 @@ typechain-types/
 # IDE files
 .vscode/
 .idea/
+
+# Python virtual environment
+venv/
+"@ | Set-Content -Path .gitignore -Encoding utf8
