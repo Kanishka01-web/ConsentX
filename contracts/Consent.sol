@@ -6,53 +6,45 @@ pragma solidity ^0.8.28;
 
 
 contract Consent {
-    // Everything inside this contract controls ConsentX's consent records.
-
-
     // ============================================================
-    // DATA STRUCTURE
+    // CONSENT RECORD
     // ============================================================
 
     struct ConsentRecord {
-        // A struct groups all information about ONE consent together.
+        // Stores all important information about one consent.
 
         address user;
-        // The wallet address that gave this consent.
+        // Wallet address that originally gave the consent.
 
         uint16 purposeCode;
-        // A small number representing the purpose of the consent.
+        // Number representing why the data is being shared.
         //
         // Example:
         // 101 = Healthcare
         // 102 = Financial
         // 103 = Marketing
-        //
-        // The actual mapping of numbers to purposes can be
-        // maintained by the backend/frontend.
 
         uint16 policyVersion;
-        // The version of the policy that the user agreed to.
-        //
-        // Example:
-        // 1 = first version of the policy
-        // 2 = updated policy
+        // Version of the privacy policy the user agreed to.
 
         uint64 grantedAt;
-        // The blockchain timestamp when consent was granted.
+        // Timestamp when the consent was originally granted.
+        //
+        // This value is NEVER changed during revocation.
 
         uint64 expiresAt;
-        // The blockchain timestamp when consent expires.
+        // Timestamp when the consent expires.
         //
-        // 0 means the consent has no expiry.
+        // 0 means no expiry was specified.
 
         uint64 revokedAt;
-        // The blockchain timestamp when consent was revoked.
+        // Timestamp when the consent was revoked.
         //
-        // 0 means it has never been revoked.
+        // 0 means it has not been revoked.
 
         bool revoked;
-        // false = the user has not revoked it.
-        // true = the user has revoked it.
+        // false = active/not revoked.
+        // true = revoked.
     }
 
 
@@ -61,29 +53,24 @@ contract Consent {
     // ============================================================
 
     mapping(address => uint256) public userNonce;
-    // Each wallet gets its own counter.
+    // Every user gets their own counter.
     //
-    // Example:
+    // This counter is used to create unique consent IDs.
     //
-    // Nirali's nonce = 0
-    // First consent → use nonce 0
-    // Then nonce becomes 1
+    // First consent:
+    // nonce = 0
     //
-    // Second consent → use nonce 1
+    // Second consent:
+    // nonce = 1
     //
-    // This helps create unique consent IDs.
+    // Third consent:
+    // nonce = 2
 
 
     mapping(bytes32 => ConsentRecord) private consents;
-    // Stores all consent records.
+    // Stores consent records using their consent ID.
     //
-    // bytes32 is used as the consent ID.
-    //
-    // Example:
-    //
-    // consentId → ConsentRecord
-    //
-    // We keep this mapping private and provide functions to read it.
+    // consentId -> ConsentRecord
 
 
     // ============================================================
@@ -98,9 +85,7 @@ contract Consent {
         uint64 grantedAt,
         uint64 expiresAt
     );
-    // This event is emitted whenever someone grants consent.
-    //
-    // The frontend/backend can listen for this event.
+    // Emitted whenever a new consent is created.
 
 
     event ConsentRevoked(
@@ -108,7 +93,28 @@ contract Consent {
         address indexed user,
         uint64 revokedAt
     );
-    // This event is emitted whenever someone revokes consent.
+    // Emitted whenever an existing consent is revoked.
+
+
+    event DataAccessed(
+        bytes32 indexed consentId,
+        address indexed accessor,
+        bytes32 dataType,
+        uint64 accessedAt
+    );
+    // Emitted whenever an application/service records a data access.
+    //
+    // consentId = consent that supposedly authorizes the access.
+    //
+    // accessor = wallet/address that called logAccess().
+    //
+    // dataType = identifier for the type of data accessed.
+    //
+    // accessedAt = blockchain timestamp of the access.
+    //
+    // IMPORTANT:
+    // We do NOT put actual private/user data on-chain.
+    // Only a small identifier is recorded.
 
 
     // ============================================================
@@ -119,35 +125,29 @@ contract Consent {
         uint16 purposeCode,
         uint16 policyVersion,
         uint64 durationSeconds
-    ) external returns (bytes32 consentId) {
-        // This function creates a new consent.
-        //
-        // durationSeconds tells us how long the consent should last.
-        //
-        // Example:
-        // 3600 seconds = 1 hour
-        //
-        // durationSeconds = 0 means no expiry.
+    )
+        external
+        returns (bytes32 consentId)
+    {
+        // Creates a new consent for the caller.
 
 
         require(
             purposeCode != 0,
             "Invalid purpose"
         );
-        // We don't allow purpose code 0.
+        // Purpose code must be valid.
 
 
         require(
             policyVersion != 0,
             "Invalid policy version"
         );
-        // Policy version must be greater than 0.
+        // Policy version must be greater than zero.
 
 
         uint256 nonce = userNonce[msg.sender];
-        // Get the current nonce for the wallet calling this function.
-        //
-        // msg.sender = the wallet that is currently calling the contract.
+        // Get the caller's current nonce.
 
 
         consentId = keccak256(
@@ -156,53 +156,53 @@ contract Consent {
                 nonce
             )
         );
-        // Generate the consent ID.
+        // Generate the consent ID from:
         //
-        // We combine:
+        // 1. The user's wallet address.
+        // 2. The user's nonce.
         //
-        //     user's wallet address
-        //     user's nonce
+        // The user cannot choose the ID themselves.
         //
-        // Then hash them using keccak256.
-        //
-        // The user does NOT choose the ID.
-        //
-        // This prevents someone else from simply choosing
-        // a predictable consent ID and occupying it first.
+        // This prevents another user from simply submitting
+        // a transaction with a chosen predictable ID.
 
 
         userNonce[msg.sender] = nonce + 1;
-        // Increase the user's nonce.
+        // Increase the nonce.
         //
-        // This means the next consent will get a different ID.
+        // This guarantees the user's next consent gets
+        // a different ID.
 
 
         uint64 grantedAt = uint64(block.timestamp);
-        // Get the current blockchain timestamp.
-        //
-        // This is saved as the original grant time.
-        //
-        // We will NEVER overwrite this when consent is revoked.
+        // Save the current blockchain timestamp.
 
 
         uint64 expiresAt = 0;
-        // Start with no expiry.
+        // By default, the consent has no expiry.
 
 
         if (durationSeconds > 0) {
-            // If the user gave us an expiry duration...
+            // If the caller provided an expiry duration...
+
+            require(
+                durationSeconds <= type(uint64).max - grantedAt,
+                "Expiry overflow"
+            );
+            // Make sure adding the duration cannot overflow uint64.
+
 
             expiresAt = grantedAt + durationSeconds;
-            // Calculate the exact expiry time.
+            // Calculate the expiry timestamp.
         }
 
 
         consents[consentId] = ConsentRecord({
             user: msg.sender,
-            // Save who gave the consent.
+            // Save the user.
 
             purposeCode: purposeCode,
-            // Save the purpose code.
+            // Save the purpose.
 
             policyVersion: policyVersion,
             // Save the policy version.
@@ -214,10 +214,10 @@ contract Consent {
             // Save the expiry timestamp.
 
             revokedAt: 0,
-            // It has not been revoked yet.
+            // Consent has not been revoked yet.
 
             revoked: false
-            // It starts as not revoked.
+            // Consent starts as active.
         });
 
 
@@ -229,9 +229,7 @@ contract Consent {
             grantedAt,
             expiresAt
         );
-        // Create a blockchain event saying:
-        //
-        // "This consent was granted."
+        // Tell the backend/frontend that a consent was created.
     }
 
 
@@ -241,41 +239,36 @@ contract Consent {
 
     function revokeConsent(
         bytes32 consentId
-    ) external {
-        // This function lets a user revoke their consent.
+    )
+        external
+    {
+        // Allows the original consent owner to revoke their consent.
 
 
         ConsentRecord storage consent = consents[consentId];
-        // Find the consent using its ID.
-        //
-        // "storage" means we are working directly with
-        // the data stored on the blockchain.
+        // Load the consent directly from blockchain storage.
 
 
         require(
             consent.user != address(0),
             "Consent does not exist"
         );
-        // Make sure the consent actually exists.
+        // Make sure this consent actually exists.
 
 
         require(
             consent.user == msg.sender,
             "Not consent owner"
         );
-        // SECURITY CHECK:
-        //
-        // Only the wallet that originally gave the consent
-        // can revoke it.
-        //
-        // Another user cannot revoke it.
+        // SECURITY:
+        // Only the original consent owner can revoke it.
 
 
         require(
             !consent.revoked,
             "Consent already revoked"
         );
-        // Prevent someone from revoking the same consent twice.
+        // Prevent revoking the same consent twice.
 
 
         consent.revoked = true;
@@ -283,12 +276,12 @@ contract Consent {
 
 
         consent.revokedAt = uint64(block.timestamp);
-        // Save the exact time of revocation.
+        // Save when the revocation happened.
         //
         // IMPORTANT:
-        // We do NOT change grantedAt.
+        // grantedAt is NOT changed.
         //
-        // This preserves our audit history.
+        // This preserves the original audit history.
 
 
         emit ConsentRevoked(
@@ -296,7 +289,50 @@ contract Consent {
             msg.sender,
             consent.revokedAt
         );
-        // Record the revocation event on the blockchain.
+        // Tell the backend/frontend that the consent was revoked.
+    }
+
+
+    // ============================================================
+    // LOG DATA ACCESS
+    // ============================================================
+
+    function logAccess(
+        bytes32 consentId,
+        bytes32 dataType
+    )
+        external
+    {
+        // Records that an application/service accessed data
+        // under a particular consent.
+
+
+        require(
+            isConsentValid(consentId),
+            "Consent is not valid"
+        );
+        // IMPORTANT:
+        //
+        // We only allow an access log if the consent is currently valid.
+        //
+        // This prevents logging an access against:
+        //
+        // - a nonexistent consent
+        // - a revoked consent
+        // - an expired consent
+
+
+        emit DataAccessed(
+            consentId,
+            msg.sender,
+            dataType,
+            uint64(block.timestamp)
+        );
+        // Record the access event.
+        //
+        // The actual data is NOT stored on-chain.
+        // Only the consent ID, accessor, data type and timestamp
+        // are recorded.
     }
 
 
@@ -306,26 +342,27 @@ contract Consent {
 
     function isConsentValid(
         bytes32 consentId
-    ) public view returns (bool) {
-        // This function checks whether consent is currently valid.
-        //
-        // "view" means it only reads data.
-        // It does not change anything on the blockchain.
+    )
+        public
+        view
+        returns (bool)
+    {
+        // Checks whether a consent is currently valid.
 
 
         ConsentRecord memory consent = consents[consentId];
-        // Load the consent into memory so we can inspect it.
+        // Load the consent into memory.
 
 
         if (consent.user == address(0)) {
-            // If there is no user, the consent doesn't exist.
+            // No user means the consent does not exist.
 
             return false;
         }
 
 
         if (consent.revoked) {
-            // If the user revoked the consent...
+            // A revoked consent is no longer valid.
 
             return false;
         }
@@ -335,21 +372,15 @@ contract Consent {
             consent.expiresAt != 0 &&
             block.timestamp >= consent.expiresAt
         ) {
-            // If:
-            //
-            // 1. The consent has an expiry time
-            // AND
-            // 2. The expiry time has passed
-            //
-            // then the consent is expired.
+            // If the consent has an expiry time
+            // and that time has passed...
 
             return false;
         }
 
 
         return true;
-        // If none of the above conditions are true,
-        // the consent is currently valid.
+        // Otherwise the consent is currently valid.
     }
 
 
@@ -364,7 +395,7 @@ contract Consent {
         view
         returns (ConsentRecord memory)
     {
-        // This function lets the application read a consent record.
+        // Allows the backend/frontend to retrieve a consent record.
 
 
         ConsentRecord memory consent = consents[consentId];
@@ -380,10 +411,5 @@ contract Consent {
 
         return consent;
         // Return the complete consent record.
-        //
-        // To check whether it is currently valid,
-        // use:
-        //
-        // isConsentValid(consentId)
     }
 }
